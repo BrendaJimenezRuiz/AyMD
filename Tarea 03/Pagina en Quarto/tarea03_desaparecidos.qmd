@@ -1,0 +1,788 @@
+---
+title: "¿Qué nos dicen los datos sobre las personas desaparecidas en México?"
+subtitle: "Tarea 03 · Reglas de asociación y clasificación · Almacenes y Minería de Datos 2026-2"
+author:
+  - name: "Brenda Jiménez Ruiz"
+  - name: "Irany Solano Marcial"
+date: "Mayo 2026"
+lang: es
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contenido"
+    number-sections: true
+    code-fold: true
+    code-summary: "Ver código"
+    code-tools: true
+    fig-width: 9
+    fig-height: 5
+    fig-align: center
+    embed-resources: true
+    fig-format: png
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import pandas as pd
+import numpy as np
+import time
+import warnings
+import matplotlib.pyplot as plt
+import matplotlib
+import seaborn as sns
+from itertools import combinations
+
+from mlxtend.preprocessing import TransactionEncoder
+from mlxtend.frequent_patterns import apriori, association_rules, fpgrowth
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
+from sklearn.tree import DecisionTreeClassifier, plot_tree, export_text
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, classification_report,
+    roc_auc_score, roc_curve, auc,
+    f1_score, recall_score, precision_score,
+    precision_recall_curve, average_precision_score
+)
+
+warnings.filterwarnings("ignore")
+sns.set_theme(style="whitegrid", context="notebook")
+SEMILLA = 42
+
+# Ruta al dataset limpio — debe estar en la misma carpeta que este .qmd
+CSV_PATH = "dataset_limpio.csv"
+```
+
+---
+
+::: {.callout-note}
+## Sobre este documento
+
+Este notebook es reproducible: contiene el código completo junto con explicaciones
+en lenguaje sencillo para que cualquier persona pueda entender qué se hizo y qué encontramos.
+El código puede ocultarse o mostrarse con el botón **"Ver código"** en cada sección.
+
+El `dataset_limpio.csv` ya viene preprocesado: excluye los 49,149 registros CONFIDENCIAL
+y tiene las variables de grupo de edad, temporada y origen ya calculadas.
+:::
+
+---
+
+# Parte I — Reglas de Asociación {.unnumbered}
+
+## ¿Qué pregunta queremos responder?
+
+En México, cada expediente de persona desaparecida registra varios datos: sexo, grupo de edad,
+estado de la república, temporada del año, institución que levantó el reporte y estatus del caso.
+La pregunta es: **¿hay combinaciones de estos datos que aparezcan juntas con mucha más frecuencia de lo esperado?**
+
+::: {.callout-note}
+### ¿Qué es una regla de asociación?
+
+Imagina el carrito de compras de miles de clientes en un supermercado. Descubres que quienes
+compran pañales el viernes también suelen comprar cerveza. Eso es una *regla de asociación*:
+un patrón del tipo **"si A ocurre, B también suele ocurrir"**.
+
+En nuestro caso, en lugar de productos, cada "transacción" es un expediente de desaparición
+y los "productos" son sus características. La regla
+`ENTIDAD=Tamaulipas → ORIGEN=Procuraduría` significaría:
+*"cuando el expediente es de Tamaulipas, es muy probable que lo haya reportado la Procuraduría"*.
+:::
+
+## Carga y exploración del dataset
+
+```{python}
+#| label: carga-datos
+
+df = pd.read_csv(CSV_PATH)
+
+print(f"Registros: {len(df):,}")
+print(f"Variables: {list(df.columns)}")
+print()
+print("Distribución de la variable objetivo:")
+print(df["ESTATUS_VICTIMA"].value_counts())
+print()
+print("Nulos por variable:")
+print(df.isnull().sum())
+```
+
+```{python}
+#| label: grafica-distribucion
+#| fig-cap: "La gran mayoría de los expedientes siguen abiertos (DESAPARECIDA). Solo el 5.7% ha sido resuelto (NO LOCALIZADA)."
+
+fig, ax = plt.subplots(figsize=(6, 4))
+counts  = df["ESTATUS_VICTIMA"].value_counts()
+colores = ["#4a90d9", "#e67e22"]
+bars    = ax.bar(counts.index, counts.values, color=colores)
+for bar, val in zip(bars, counts.values):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 200,
+            f"{val:,}", ha="center", va="bottom", fontsize=11, fontweight="bold")
+ax.set_xlabel("Estatus del expediente")
+ax.set_ylabel("Número de expedientes")
+ax.set_title("Distribución de ESTATUS_VICTIMA\n(84,738 registros con información pública)")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: distribucion-variables
+#| fig-cap: "Distribución de las principales variables categóricas."
+
+fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+cnt = df["SEXO"].value_counts()
+axes[0,0].bar(cnt.index.astype(str), cnt.values, color="#4a90d9")
+axes[0,0].set_title("Sexo"); axes[0,0].set_ylabel("Registros")
+
+cnt2 = df["GRUPO_EDAD"].fillna("SIN DATO").value_counts()
+axes[0,1].bar(cnt2.index.astype(str), cnt2.values, color="#5ba85b")
+axes[0,1].set_title("Grupo de edad")
+axes[0,1].tick_params(axis="x", rotation=30)
+
+cnt3 = df["TEMPORADA"].fillna("SIN DATO").value_counts()
+axes[1,0].bar(cnt3.index.astype(str), cnt3.values, color="#e67e22")
+axes[1,0].set_title("Temporada")
+
+cnt4 = df["ORIGEN_SIMPLIFICADO"].value_counts()
+axes[1,1].barh(cnt4.index.astype(str), cnt4.values, color="#9b59b6")
+axes[1,1].set_title("Origen del reporte")
+
+plt.suptitle("Distribución de variables del dataset limpio", fontsize=13, y=1.01)
+plt.tight_layout()
+plt.show()
+```
+
+## Construcción de transacciones
+
+El algoritmo Apriori necesita que los datos lleguen como listas de conjuntos de ítems,
+no como una tabla. Cada expediente se convierte en un conjunto de pares `VARIABLE=valor`.
+Los campos vacíos simplemente no generan ítem.
+
+```{python}
+#| label: transacciones
+
+columnas_items = {
+    "SEXO":               "SEXO",
+    "GRUPO_EDAD":         "GRUPO_EDAD",
+    "TEMPORADA":          "TEMPORADA",
+    "ENTIDAD":            "ENTIDAD",
+    "ORIGEN_SIMPLIFICADO":"ORIGEN",
+    "ESTATUS_VICTIMA":    "ESTATUS_VICTIMA",
+}
+
+transacciones = []
+for _, fila in df.iterrows():
+    items = set()
+    for col, prefijo in columnas_items.items():
+        val = fila.get(col)
+        if pd.notna(val) and str(val).strip() not in ("", "nan"):
+            items.add(f"{prefijo}={str(val).strip()}")
+    if items:
+        transacciones.append(list(items))
+
+n_transacciones = len(transacciones)
+print(f"Transacciones generadas : {n_transacciones:,}")
+print(f"Promedio de ítems/trans : {np.mean([len(t) for t in transacciones]):.1f}")
+print(f"\nEjemplo de transacción:")
+print(sorted(transacciones[0]))
+```
+
+## Los tres algoritmos
+
+```{python}
+#| label: parametros
+#| echo: false
+
+MIN_SUPPORT = 0.05
+MIN_CONF    = 0.60
+MIN_LIFT    = 1.0
+
+print(f"Parámetros (iguales en los tres algoritmos):")
+print(f"  Soporte mínimo  : {MIN_SUPPORT:.0%} → al menos {int(MIN_SUPPORT*n_transacciones):,} expedientes")
+print(f"  Confianza mínima: {MIN_CONF:.0%}")
+print(f"  Lift mínimo     : {MIN_LIFT}")
+```
+
+### Apriori propio — implementado desde cero
+
+::: {.callout-note}
+### ¿Cómo funciona el Apriori?
+
+Propuesto en 1994 por Agrawal y Srikant, se basa en la **propiedad antimonótona**:
+si un conjunto de ítems no es suficientemente frecuente, ningún conjunto más grande que lo
+contenga puede serlo. Esto permite descartar combinaciones imposibles sin tener que contarlas.
+
+Trabaja nivel por nivel: primero cuenta ítems individuales, luego pares, luego tríos, etc.
+:::
+
+```{python}
+#| label: apriori-propio
+
+def calcular_soporte(transacciones, itemsets):
+    conteos = {frozenset(it): 0 for it in itemsets}
+    for t in transacciones:
+        t_set = frozenset(t)
+        for it in conteos:
+            if it.issubset(t_set):
+                conteos[it] += 1
+    return {it: cnt / len(transacciones) for it, cnt in conteos.items()}
+
+def generar_candidatos(frecuentes_prev, k):
+    fl = list(frecuentes_prev)
+    candidatos = set()
+    for i in range(len(fl)):
+        for j in range(i + 1, len(fl)):
+            union = fl[i] | fl[j]
+            if len(union) == k:
+                subs = [frozenset(c) for c in combinations(union, k - 1)]
+                if all(s in frecuentes_prev for s in subs):
+                    candidatos.add(union)
+    return candidatos
+
+t0 = time.time()
+
+items_ind  = list(set(item for t in transacciones for item in t))
+soportes_1 = calcular_soporte(transacciones, [frozenset([i]) for i in items_ind])
+frecuentes = {it: s for it, s in soportes_1.items() if s >= MIN_SUPPORT}
+
+todos_frec        = dict(frecuentes)
+resumen_por_nivel = {1: len(frecuentes)}
+
+k = 2
+while frecuentes:
+    cands_k    = generar_candidatos(set(frecuentes.keys()), k)
+    if not cands_k: break
+    sops_k     = calcular_soporte(transacciones, cands_k)
+    frecuentes = {it: s for it, s in sops_k.items() if s >= MIN_SUPPORT}
+    if frecuentes:
+        todos_frec.update(frecuentes)
+        resumen_por_nivel[k] = len(frecuentes)
+    k += 1
+
+tiempo_propio = time.time() - t0
+total_itemsets = sum(resumen_por_nivel.values())
+
+print(f"Tiempo: {tiempo_propio:.2f} s  |  Total itemsets: {total_itemsets}")
+resumen_df = pd.DataFrame([
+    {"Nivel k": k,
+     "Descripción": "Ítems individuales" if k==1 else f"Conjuntos de {k} ítems",
+     "Itemsets frecuentes": v}
+    for k, v in resumen_por_nivel.items()
+])
+print(resumen_df.to_string(index=False))
+```
+
+```{python}
+#| label: reglas-propias
+
+reglas_propias = []
+for itemset, sop_total in todos_frec.items():
+    if len(itemset) < 2: continue
+    for r in range(1, len(itemset)):
+        for cons in combinations(itemset, r):
+            cons    = frozenset(cons)
+            ant     = itemset - cons
+            sop_ant = todos_frec.get(ant, 0)
+            if sop_ant == 0: continue
+            conf    = sop_total / sop_ant
+            sop_c   = todos_frec.get(cons, 0)
+            lift    = conf / sop_c if sop_c > 0 else 0
+            if conf >= MIN_CONF and lift >= MIN_LIFT:
+                reglas_propias.append({
+                    "soporte":   round(sop_total, 4),
+                    "confianza": round(conf, 4),
+                    "lift":      round(lift, 4),
+                })
+
+print(f"Reglas generadas (Apriori propio): {len(reglas_propias)}")
+```
+
+### Comparación con mlxtend: Apriori y FP-Growth
+
+```{python}
+#| label: mlxtend
+
+te       = TransactionEncoder()
+te_arr   = te.fit(transacciones).transform(transacciones)
+df_te    = pd.DataFrame(te_arr, columns=te.columns_)
+
+t1       = time.time()
+freq_mlx = apriori(df_te, min_support=MIN_SUPPORT, use_colnames=True)
+reg_mlx  = association_rules(freq_mlx, metric="confidence",
+                              min_threshold=MIN_CONF, num_itemsets=len(freq_mlx))
+reg_mlx  = reg_mlx[reg_mlx["lift"] >= MIN_LIFT]
+t_mlx    = time.time() - t1
+
+t2       = time.time()
+freq_fpg = fpgrowth(df_te, min_support=MIN_SUPPORT, use_colnames=True)
+reg_fpg  = association_rules(freq_fpg, metric="confidence",
+                              min_threshold=MIN_CONF, num_itemsets=len(freq_fpg))
+reg_fpg  = reg_fpg[reg_fpg["lift"] >= MIN_LIFT]
+t_fpg    = time.time() - t2
+
+pd.DataFrame([
+    {"Algoritmo": "Apriori propio",    "Itemsets": total_itemsets,
+     "Reglas": len(reglas_propias), "Tiempo (s)": round(tiempo_propio, 2),
+     "¿Por qué?": "Python puro, sin optimizaciones"},
+    {"Algoritmo": "Apriori mlxtend",   "Itemsets": len(freq_mlx),
+     "Reglas": len(reg_mlx),        "Tiempo (s)": round(t_mlx, 2),
+     "¿Por qué?": "NumPy vectorizado (código en C)"},
+    {"Algoritmo": "FP-Growth mlxtend", "Itemsets": len(freq_fpg),
+     "Reglas": len(reg_fpg),        "Tiempo (s)": round(t_fpg, 2),
+     "¿Por qué?": "FP-Tree: solo 2 escaneos del dataset"},
+])
+```
+
+::: {.callout-tip}
+### Los tres encuentran exactamente lo mismo
+
+Son correctos y completos: con los mismos parámetros garantizan los mismos resultados.
+La diferencia es puramente de velocidad. **FP-Growth** es el más rápido porque construye
+una estructura comprimida en el primer escaneo y extrae los patrones sin volver a leer los datos.
+:::
+
+## Las métricas: ¿cómo evaluar una regla?
+
+| Métrica | Umbral | ¿Qué mide? |
+|:--------|:------:|:-----------|
+| **Soporte** | ≥ 5 % | El patrón aparece en al menos 1 de cada 20 expedientes |
+| **Confianza** | ≥ 60 % | Dado el antecedente, el consecuente ocurre en ≥ 6 de 10 casos |
+| **Lift** | ≥ 1.0 | La asociación es real, no coincidencia (lift > 1 = ocurren juntos más de lo esperado) |
+
+## Las 15 reglas con mayor lift
+
+```{python}
+#| label: top15
+
+reglas_df = reg_mlx.copy()
+reglas_df["casos"] = (reglas_df["support"] * n_transacciones).astype(int)
+top15 = reglas_df.sort_values("lift", ascending=False).head(15).reset_index(drop=True)
+
+disp = top15[["antecedents","consequents","support","confidence","lift","casos"]].copy()
+disp.columns = ["Antecedente","Consecuente","Soporte","Confianza","Lift","Casos"]
+disp["Antecedente"] = disp["Antecedente"].apply(lambda x: " + ".join(sorted(x)))
+disp["Consecuente"] = disp["Consecuente"].apply(lambda x: " + ".join(sorted(x)))
+disp[["Soporte","Confianza","Lift"]] = disp[["Soporte","Confianza","Lift"]].round(3)
+disp
+```
+
+```{python}
+#| label: grafica-lift
+#| fig-cap: "Top 10 reglas por lift. La línea punteada indica lift = 1 (sin asociación real). Las primeras barras dominan con lift > 4."
+
+top10 = reglas_df.sort_values("lift", ascending=False).head(10).copy()
+top10["etiqueta"] = (
+    top10["antecedents"].apply(lambda x: " + ".join(sorted(x))
+        .replace("ENTIDAD=","").replace("ESTATUS_VICTIMA=","EST=")
+        .replace("ORIGEN=","ORG=").replace("SEXO=","")) +
+    " →\n" +
+    top10["consequents"].apply(lambda x: " + ".join(sorted(x))
+        .replace("ENTIDAD=","").replace("ESTATUS_VICTIMA=","EST=")
+        .replace("ORIGEN=","ORG=").replace("SEXO=",""))
+)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+colores_bar = ["#1a3a5c" if i < 2 else "#4a90d9" for i in range(len(top10))]
+ax.barh(top10["etiqueta"].iloc[::-1], top10["lift"].iloc[::-1], color=colores_bar[::-1])
+ax.axvline(x=1, linestyle="--", color="#e74c3c", linewidth=1.5, label="Lift = 1 (sin asociación)")
+ax.set_xlabel("Lift", fontsize=12)
+ax.set_title("Top 10 reglas por Lift\n(cuántas veces más frecuente que el azar)", fontsize=12)
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Interpretación de los hallazgos
+
+::: {.callout-tip}
+### Los hallazgos en palabras simples
+
+**Tamaulipas y la Procuraduría (lift ≈ 4.4):** El 90% de los expedientes de Tamaulipas
+fueron reportados por la Procuraduría — en el resto del país dominan la Fiscalía o la Comisión Local.
+Esto ocurre 4.4 veces más de lo esperado si los factores fueran independientes.
+Probablemente refleja una estructura institucional diferente, no un patrón de desaparición distinto.
+
+**Michoacán y la Procuraduría (lift ≈ 4.0):** El mismo patrón institucional aparece en Michoacán.
+
+**Hombres adultos de 26–60 años (lift ≈ 1.1):** Las desapariciones en ese rango de edad
+son predominantemente masculinas. Asociación real pero moderada.
+:::
+
+::: {.callout-warning}
+Las reglas de asociación describen **lo que se registra**, no lo que ocurre en la realidad.
+El 36.7% de registros CONFIDENCIAL excluidos podría tener un perfil completamente diferente.
+:::
+
+---
+
+# Parte II — Clasificación {.unnumbered}
+
+## ¿Qué intentamos predecir?
+
+::: {.callout-note}
+### ¿Qué es un árbol de decisión?
+
+Funciona como un juego de 20 preguntas. El modelo aprende automáticamente cuáles son
+las preguntas más útiles sobre las características de cada expediente (¿en qué estado?
+¿en qué año? ¿quién lo reportó?) y en qué orden hacerlas,
+usando miles de expedientes con respuesta conocida como ejemplos.
+:::
+
+Queremos predecir si un expediente tiene estatus **DESAPARECIDA** (caso abierto)
+o **NO LOCALIZADA** (caso resuelto), a partir de las características disponibles.
+
+## El problema del desbalance
+
+```{python}
+#| label: desbalance
+
+dist     = df["ESTATUS_VICTIMA"].value_counts()
+dist_pct = df["ESTATUS_VICTIMA"].value_counts(normalize=True)
+for cls in dist.index:
+    print(f"  {cls}: {dist[cls]:,} ({dist_pct[cls]:.1%})")
+
+prop_may = dist_pct.iloc[0]
+prop_min = dist_pct.iloc[1]
+print(f"\nRazón de desbalance: {prop_may/prop_min:.0f}:1")
+print(f"\nParadoja de la Exactitud:")
+print(f"  Un modelo que SIEMPRE prediga DESAPARECIDA obtendría {prop_may:.1%} de accuracy")
+print(f"  sin detectar NINGÚN caso NO LOCALIZADA.")
+```
+
+::: {.callout-warning}
+### Por qué no usamos la exactitud como métrica principal
+
+Con 94% de expedientes como DESAPARECIDA, un clasificador trivial alcanza 94% de exactitud.
+Usamos en cambio: **F1 (NO LOCALIZADA)**, **PR-AUC** y **Recall (NO LOCALIZADA)**.
+:::
+
+## Preprocesamiento
+
+```{python}
+#| label: preprocesamiento
+
+features = ["SEXO", "GRUPO_EDAD", "ANIO_DESAPARICION",
+            "TEMPORADA", "ENTIDAD", "ORIGEN_SIMPLIFICADO"]
+target   = "ESTATUS_VICTIMA"
+
+df_model = df[features + [target]].copy()
+
+for col in ["GRUPO_EDAD", "TEMPORADA"]:
+    n = df_model[col].isnull().sum()
+    df_model[col] = df_model[col].fillna("SIN_DATO")
+    print(f"  {col}: {n:,} nulos → 'SIN_DATO'")
+
+med = df_model["ANIO_DESAPARICION"].median()
+n   = df_model["ANIO_DESAPARICION"].isnull().sum()
+df_model["ANIO_DESAPARICION"] = df_model["ANIO_DESAPARICION"].fillna(med)
+print(f"  ANIO_DESAPARICION: {n:,} nulos → mediana ({med:.0f})")
+
+le_dict = {}
+for col in ["SEXO", "GRUPO_EDAD", "TEMPORADA", "ENTIDAD", "ORIGEN_SIMPLIFICADO"]:
+    le = LabelEncoder()
+    df_model[col] = le.fit_transform(df_model[col].astype(str))
+    le_dict[col]  = le
+    print(f"  {col}: {len(le.classes_)} categorías codificadas")
+
+le_target = LabelEncoder()
+y         = le_target.fit_transform(df_model[target])
+X         = df_model[features]
+clases    = list(le_target.classes_)
+print(f"\nClases: {dict(enumerate(clases))}  (1 = NO LOCALIZADA ← clase positiva)")
+```
+
+## División entrenamiento / prueba
+
+```{python}
+#| label: division
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=SEMILLA, stratify=y
+)
+print(f"Entrenamiento: {len(X_train):,}  |  Prueba: {len(X_test):,}")
+print(f"stratify=y mantiene la proporción 94%/6% en ambos conjuntos.")
+```
+
+## Entrenamiento de modelos
+
+```{python}
+#| label: cv-scorer
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEMILLA)
+
+def scorer_auc(modelo, X_, y_):
+    try:
+        return roc_auc_score(y_, modelo.predict_proba(X_)[:, 1])
+    except ValueError:
+        return 0.5
+```
+
+```{python}
+#| label: modelo1
+
+arbol_defecto = DecisionTreeClassifier(
+    criterion="gini", class_weight="balanced", random_state=SEMILLA
+)
+arbol_defecto.fit(X_train, y_train)
+print(f"Árbol por defecto → profundidad={arbol_defecto.get_depth()}, hojas={arbol_defecto.get_n_leaves()}")
+```
+
+```{python}
+#| label: modelo2
+
+arbol_tmp  = DecisionTreeClassifier(criterion="gini", class_weight="balanced", random_state=SEMILLA)
+arbol_tmp.fit(X_train, y_train)
+ruta_poda  = arbol_tmp.cost_complexity_pruning_path(X_train, y_train)
+alphas     = np.unique(ruta_poda.ccp_alphas[:-1])
+if len(alphas) > 20:
+    alphas = alphas[np.linspace(0, len(alphas)-1, 20).astype(int)]
+
+busqueda_arbol = GridSearchCV(
+    DecisionTreeClassifier(criterion="gini", class_weight="balanced", random_state=SEMILLA),
+    param_grid={"ccp_alpha": alphas},
+    scoring=scorer_auc, cv=cv, n_jobs=-1
+)
+busqueda_arbol.fit(X_train, y_train)
+alpha_opt = busqueda_arbol.best_params_["ccp_alpha"]
+print(f"α* óptimo = {alpha_opt:.6f}  |  AUC-CV = {busqueda_arbol.best_score_:.4f}")
+```
+
+```{python}
+#| label: grafica-alpha
+#| fig-cap: "Búsqueda del α* óptimo. El árbol podado en el punto rojo tiene el mejor balance entre complejidad y desempeño."
+
+res_cv = pd.DataFrame(busqueda_arbol.cv_results_)
+res_cv["ccp_alpha"] = res_cv["param_ccp_alpha"].astype(float)
+
+fig, ax = plt.subplots(figsize=(9, 4))
+sns.lineplot(data=res_cv, x="ccp_alpha", y="mean_test_score", marker="o", ax=ax)
+ax.axvline(x=alpha_opt, linestyle="--", color="#e74c3c", label=f"α* = {alpha_opt:.6f}")
+ax.set_xlabel("ccp_alpha"); ax.set_ylabel("AUC promedio (CV)")
+ax.set_title("Búsqueda del α* óptimo por validación cruzada")
+ax.legend(); plt.tight_layout(); plt.show()
+```
+
+```{python}
+#| label: modelo3
+
+busqueda_rf = GridSearchCV(
+    RandomForestClassifier(class_weight="balanced", random_state=SEMILLA, n_jobs=-1),
+    param_grid={"n_estimators": [50, 100], "max_depth": [8, 12]},
+    scoring=scorer_auc, cv=cv, n_jobs=-1
+)
+busqueda_rf.fit(X_train, y_train)
+print(f"Random Forest → mejores parámetros: {busqueda_rf.best_params_}")
+print(f"AUC-CV = {busqueda_rf.best_score_:.4f}")
+```
+
+## Evaluación y comparación
+
+```{python}
+#| label: evaluacion
+
+def evaluar(nombre, modelo, X_tst, y_tst):
+    pred  = modelo.predict(X_tst)
+    probs = modelo.predict_proba(X_tst)[:, 1]
+    return {
+        "Modelo":            nombre,
+        "Accuracy":          round(accuracy_score(y_tst, pred), 4),
+        "F1 NO LOCALIZADA":  round(f1_score(y_tst, pred, pos_label=1, average="binary", zero_division=0), 4),
+        "Recall NO LOC.":    round(recall_score(y_tst, pred, pos_label=1, zero_division=0), 4),
+        "Precision NO LOC.": round(precision_score(y_tst, pred, pos_label=1, zero_division=0), 4),
+        "ROC-AUC":           round(roc_auc_score(y_tst, probs), 4),
+        "PR-AUC ★":          round(average_precision_score(y_tst, probs), 4),
+        "_pred":  pred, "_probs": probs, "_cm": confusion_matrix(y_tst, pred),
+    }
+
+modelos_eval = [
+    evaluar("Árbol por defecto",    arbol_defecto,                 X_test, y_test),
+    evaluar("Árbol podado (α*)",    busqueda_arbol.best_estimator_, X_test, y_test),
+    evaluar("Random Forest",        busqueda_rf.best_estimator_,   X_test, y_test),
+]
+
+cols = ["Modelo","Accuracy","F1 NO LOCALIZADA","Recall NO LOC.",
+        "Precision NO LOC.","ROC-AUC","PR-AUC ★"]
+pd.DataFrame(modelos_eval)[cols].sort_values("PR-AUC ★", ascending=False)
+```
+
+::: {.callout-tip}
+El **Árbol podado** tiene menor exactitud (≈84%) que el árbol sin restricciones (≈88%),
+pero detecta más casos NO LOCALIZADA y tiene mayor PR-AUC.
+Elegir por accuracy habría llevado a escoger el modelo incorrecto.
+:::
+
+## Árbol podado — visualización
+
+```{python}
+#| label: arbol-visual
+#| fig-cap: "Árbol podado (máximo 3 niveles). Cada nodo muestra la variable y el umbral de decisión. Los colores indican la predicción predominante."
+#| fig-width: 22
+#| fig-height: 10
+#| out-width: 100%
+#| fig-dpi: 150
+
+arbol_podado = busqueda_arbol.best_estimator_
+fig, ax = plt.subplots(figsize=(22, 10))
+plot_tree(arbol_podado, feature_names=features, class_names=clases,
+          filled=True, rounded=True, max_depth=3, fontsize=10, ax=ax,
+          impurity=False, proportion=False)
+ax.set_title(f"Árbol podado (max_depth=3 para visualización) | α* = {alpha_opt:.6f}", fontsize=13)
+plt.tight_layout()
+plt.show()
+```
+
+## Curvas ROC y Precision-Recall
+
+```{python}
+#| label: curvas
+#| fig-cap: "Las curvas PR (derecha) son más informativas que las ROC cuando hay desbalance severo, porque no inflan el resultado con los verdaderos negativos."
+#| fig-width: 14
+#| fig-height: 5
+
+colores_m   = ["#4a90d9", "#e67e22", "#27ae60"]
+prevalencia = y_test.mean()
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+ax = axes[0]
+for res, col in zip(modelos_eval, colores_m):
+    fpr, tpr, _ = roc_curve(y_test, res["_probs"])
+    ax.plot(fpr, tpr, color=col, label=f"{res['Modelo']} (AUC={res['ROC-AUC']:.3f})")
+ax.plot([0,1],[0,1],"--",color="gray",label="Azar")
+ax.set_xlabel("Falsos Positivos"); ax.set_ylabel("Recall")
+ax.set_title("Curva ROC"); ax.legend(fontsize=8)
+
+ax = axes[1]
+for res, col in zip(modelos_eval, colores_m):
+    prec_c, rec_c, _ = precision_recall_curve(y_test, res["_probs"])
+    ax.plot(rec_c, prec_c, color=col, label=f"{res['Modelo']} (AP={res['PR-AUC ★']:.3f})")
+ax.axhline(y=prevalencia, linestyle="--", color="red", label=f"Baseline ({prevalencia:.3f})")
+ax.set_xlabel("Recall"); ax.set_ylabel("Precisión")
+ax.set_title("Curva Precision-Recall"); ax.legend(fontsize=8)
+
+plt.tight_layout(); plt.show()
+```
+
+## Matriz de confusión del mejor modelo
+
+```{python}
+#| label: confusion
+#| fig-cap: "Matriz de confusión. Los FN son el error más costoso: expedientes que deberían cerrarse pero el modelo no detecta."
+
+mejor = sorted(modelos_eval, key=lambda r: r["PR-AUC ★"], reverse=True)[0]
+cm    = mejor["_cm"]
+tn, fp, fn, tp = cm[0,0], cm[0,1], cm[1,0], cm[1,1]
+
+cm_df = pd.DataFrame(cm,
+    index=["Real: DESAPARECIDA","Real: NO LOCALIZADA"],
+    columns=["Pred: DESAPARECIDA","Pred: NO LOCALIZADA"])
+
+fig, ax = plt.subplots(figsize=(6, 5))
+sns.heatmap(cm_df, annot=True, fmt="d", cmap="Blues", cbar=False, ax=ax, annot_kws={"size": 14})
+ax.set_title(f"Mejor modelo: {mejor['Modelo']}\nPR-AUC = {mejor['PR-AUC ★']:.4f}")
+plt.tight_layout(); plt.show()
+
+print(f"✅ TN = {tn:,} → DESAPARECIDA predicha correctamente")
+print(f"⚠️  FP = {fp:,} → DESAPARECIDA predicha como NO LOCALIZADA (expediente cerrado por error)")
+print(f"❌ FN = {fn:,}  → NO LOCALIZADA predicha como DESAPARECIDA (expediente no se cierra ← PEOR ERROR)")
+print(f"✅ TP = {tp:,} → NO LOCALIZADA predicha correctamente")
+print(f"\nEl modelo recupera el {tp/(tp+fn):.0%} de los casos NO LOCALIZADA.")
+```
+
+## Importancia de variables
+
+```{python}
+#| label: importancia
+#| fig-cap: "ENTIDAD y ANIO_DESAPARICION dominan la predicción — el modelo captura prácticas institucionales de registro, no el fenómeno real de desaparición."
+
+rf_final  = busqueda_rf.best_estimator_
+tabla_imp = pd.DataFrame({
+    "Variable":    features,
+    "Importancia": rf_final.feature_importances_
+}).sort_values("Importancia", ascending=False).reset_index(drop=True)
+tabla_imp["Porcentaje (%)"] = (tabla_imp["Importancia"] / tabla_imp["Importancia"].sum() * 100).round(1)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+sns.barplot(data=tabla_imp, x="Importancia", y="Variable", palette="Blues_d", ax=ax)
+ax.set_title("Importancia de variables — Random Forest")
+ax.set_xlabel("Reducción media del índice Gini")
+plt.tight_layout(); plt.show()
+
+print(tabla_imp[["Variable","Importancia","Porcentaje (%)"]].to_string(index=False))
+```
+
+## Optimización del umbral de decisión
+
+```{python}
+#| label: umbral
+#| fig-cap: "El umbral θ = 0.5 no siempre es el óptimo. El valor que maximiza F1 depende del objetivo operativo."
+
+y_probs_m = mejor["_probs"]
+umbrales  = np.arange(0.05, 0.95, 0.01)
+f1_vals   = [f1_score(y_test, (y_probs_m >= u).astype(int),
+             pos_label=1, average="binary", zero_division=0) for u in umbrales]
+u_opt  = umbrales[np.argmax(f1_vals)]
+f1_opt = max(f1_vals)
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(umbrales, f1_vals, color="#4a90d9", linewidth=2, label="F1 NO LOCALIZADA")
+ax.axvline(x=0.5,   linestyle="--", color="gray",    label="θ = 0.5 (default)")
+ax.axvline(x=u_opt, linestyle="--", color="#e74c3c",  label=f"θ* = {u_opt:.2f} (F1 máx = {f1_opt:.4f})")
+ax.set_xlabel("Umbral (θ)"); ax.set_ylabel("F1 NO LOCALIZADA")
+ax.set_title(f"Efecto del umbral — {mejor['Modelo']}"); ax.legend()
+plt.tight_layout(); plt.show()
+
+for lbl, u_val in [("θ = 0.50 (default)", 0.5), (f"θ* = {u_opt:.2f} (óptimo)", u_opt)]:
+    y_u = (y_probs_m >= u_val).astype(int)
+    print(f"{lbl}: F1={f1_score(y_test,y_u,pos_label=1,average='binary',zero_division=0):.4f}  "
+          f"Recall={recall_score(y_test,y_u,pos_label=1,zero_division=0):.4f}  "
+          f"Precision={precision_score(y_test,y_u,pos_label=1,zero_division=0):.4f}")
+```
+
+---
+
+# Conclusiones {.unnumbered}
+
+| Pregunta | Respuesta |
+|:---------|:----------|
+| ¿Cuál Apriori es más lento? | El propio (Python puro) |
+| ¿Cuál es más rápido y por qué? | FP-Growth — solo 2 escaneos del dataset |
+| ¿Los tres dan los mismos resultados? | Sí — diferencia solo de velocidad |
+| ¿Cuántos itemsets frecuentes? | 132 (soporte ≥ 5%) |
+| ¿Cuántas reglas útiles? | 99 (confianza ≥ 60%, lift ≥ 1.0) |
+| ¿Cuál es el mejor modelo? | Árbol podado (mayor PR-AUC, Recall NOLOC = 0.90) |
+| Limitación principal | 36.7% de datos CONFIDENCIAL excluidos |
+
+Los patrones más fuertes — tanto en reglas como en clasificación — están dominados por
+**ENTIDAD** y **ANIO_DESAPARICION**, no por características individuales de las víctimas.
+Ambos enfoques llegan al mismo hallazgo por rutas independientes: los modelos capturan
+**prácticas institucionales de registro**, no el fenómeno real de las desapariciones.
+
+::: {.callout-warning}
+`ESTATUS_VICTIMA` es un estado administrativo, no la situación real de la persona.
+Los resultados deben interpretarse con esta limitación fundamental en mente.
+:::
+
+---
+
+# Referencias {.unnumbered}
+
+- Agrawal, R. & Srikant, R. (1994). *Mining association rules between sets of items in large databases*. VLDB.
+- Bamber, D. (1975). *Journal of Mathematical Psychology*, 12(4), 387–415.
+- Breiman, L. et al. (1984). *Classification and Regression Trees*. Wadsworth.
+- Breiman, L. (2001). Random Forests. *Machine Learning*, 45(1), 5–32.
+- Fawcett, T. (2006). *Pattern Recognition Letters*, 27(8), 861–874.
+- Han, J., Kamber, M. & Pei, J. (2011). *Data Mining: Concepts and Techniques* (3ª ed.). Morgan Kaufmann.
+- James, G. et al. (2021). *An Introduction to Statistical Learning* (2ª ed.). Springer.
+- Provost, F. & Fawcett, T. (2013). *Data Science for Business*. O'Reilly.
+- Saito, T. & Rehmsmeier, M. (2015). *PLOS ONE*, 10(3), e0118432.

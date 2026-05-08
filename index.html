@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Portafolio · Minería de Datos</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:       #0f0f0f;
+      --surface:  #181818;
+      --border:   #2a2a2a;
+      --accent:   #c8f060;
+      --accent2:  #60c8f0;
+      --text:     #e8e8e0;
+      --muted:    #666;
+      --tag-bg:   #1e2a1e;
+      --tag-text: #90c040;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 300;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* grid noise overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(200,240,96,.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(200,240,96,.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ── HEADER ── */
+    header {
+      padding: 72px 0 56px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(2.4rem, 6vw, 4rem);
+      line-height: 1.1;
+      font-weight: 400;
+      color: var(--text);
+    }
+
+    h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    .subtitle {
+      margin-top: 16px;
+      font-size: .95rem;
+      color: var(--muted);
+      max-width: 480px;
+      line-height: 1.7;
+    }
+
+    .authors {
+      margin-top: 28px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .author-chip {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      color: var(--muted);
+      letter-spacing: .04em;
+    }
+
+    /* ── SECTION LABEL ── */
+    .section-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 48px 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .section-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── CARDS ── */
+    .cards { display: flex; flex-direction: column; gap: 2px; padding-bottom: 80px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 28px 32px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px 24px;
+      align-items: start;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color .2s, background .2s, transform .15s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--accent);
+      transform: scaleY(0);
+      transform-origin: bottom;
+      transition: transform .25s ease;
+    }
+
+    .card:hover {
+      border-color: #3a3a3a;
+      background: #1e1e1e;
+      transform: translateX(4px);
+    }
+    .card:hover::before { transform: scaleY(1); }
+
+    .card-number {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      letter-spacing: .1em;
+    }
+
+    .card-title {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.2rem;
+      font-weight: 400;
+      line-height: 1.3;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .card-desc {
+      font-size: .85rem;
+      color: var(--muted);
+      line-height: 1.65;
+      max-width: 520px;
+    }
+
+    .card-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    .tag {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      padding: 3px 9px;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      border-radius: 4px;
+      letter-spacing: .04em;
+    }
+    .tag.blue {
+      background: #1a242e;
+      color: #60a8d0;
+    }
+    .tag.purple {
+      background: #22182e;
+      color: #a080d0;
+    }
+
+    .card-arrow {
+      font-size: 1.3rem;
+      color: var(--muted);
+      transition: color .2s, transform .2s;
+      padding-top: 4px;
+    }
+    .card:hover .card-arrow {
+      color: var(--accent);
+      transform: translate(3px, -3px);
+    }
+
+    /* placeholder card (próximamente) */
+    .card.soon {
+      opacity: .45;
+      pointer-events: none;
+    }
+    .card.soon::before { display: none; }
+    .badge-soon {
+      font-family: 'DM Mono', monospace;
+      font-size: 9px;
+      letter-spacing: .12em;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: .08em;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    /* animate in */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    header  { animation: fadeUp .5s ease both; }
+    .card:nth-child(1) { animation: fadeUp .5s .1s ease both; }
+    .card:nth-child(2) { animation: fadeUp .5s .18s ease both; }
+    .card:nth-child(3) { animation: fadeUp .5s .26s ease both; }
+    .card:nth-child(4) { animation: fadeUp .5s .34s ease both; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Almacenes &amp; Minería de Datos · 2026-2</p>
+    <h1>Portafolio de<br><em>Tareas</em></h1>
+    <p class="subtitle">Colección de trabajos del curso: análisis exploratorio, reglas de asociación, clasificación y más.</p>
+    <div class="authors">
+      <span class="author-chip">Brenda Jiménez Ruiz</span>
+      <span class="author-chip">Irany Solano Marcial</span>
+    </div>
+  </header>
+
+  <p class="section-label">Proyectos</p>
+
+  <div class="cards">
+
+    <!-- TAREA 03 — activa -->
+    <a class="card" href="Tarea%2003/tarea03_desaparecidos.html">
+      <div>
+        <p class="card-number">Tarea 03</p>
+        <p class="card-title">¿Qué nos dicen los datos sobre las personas desaparecidas en México?</p>
+        <p class="card-desc">Reglas de asociación (Apriori propio, mlxtend, FP-Growth) y clasificación con árboles de decisión y Random Forest sobre 84,738 expedientes públicos del RNPDNO.</p>
+        <div class="card-meta">
+          <span class="tag">Apriori</span>
+          <span class="tag">FP-Growth</span>
+          <span class="tag blue">Árbol de decisión</span>
+          <span class="tag purple">Random Forest</span>
+        </div>
+      </div>
+      <span class="card-arrow">↗</span>
+    </a>
+
+    <!-- PLACEHOLDER 2 -->
+    <div class="card soon">
+      <div>
+        <p class="card-number">Proyecto</p>
+        <p class="card-title">Próximamente</p>
+        <p class="card-desc">Este espacio se actualizará cuando se publique el Proyecto.</p>
+      </div>
+      <span class="badge-soon">Próximo</span>
+    </div>
+
+  </div>
+
+  <footer>
+    <span>Almacenes &amp; Minería de Datos · UNAM · 2026</span>
+    <span>Generado con Quarto</span>
+  </footer>
+
+</div>
+</body>
+</html>
